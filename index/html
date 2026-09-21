@@ -1,0 +1,369 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <title>BusTimes-Style Tracker (Single File)</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      margin: 0;
+      display: flex;
+      height: 100vh;
+    }
+    #sidebar {
+      width: 320px;
+      padding: 10px;
+      box-sizing: border-box;
+      border-right: 1px solid #ccc;
+      overflow-y: auto;
+    }
+    #map {
+      flex: 1;
+    }
+    h2 {
+      margin-top: 10px;
+      font-size: 16px;
+      border-bottom: 1px solid #ddd;
+      padding-bottom: 4px;
+    }
+    label {
+      display: block;
+      margin-top: 6px;
+      font-size: 13px;
+    }
+    input, select, textarea, button {
+      width: 100%;
+      box-sizing: border-box;
+      margin-top: 3px;
+      padding: 4px;
+      font-size: 13px;
+    }
+    button {
+      margin-top: 8px;
+      cursor: pointer;
+    }
+    .list {
+      margin-top: 6px;
+      font-size: 12px;
+      border: 1px solid #ddd;
+      padding: 4px;
+      max-height: 120px;
+      overflow-y: auto;
+    }
+    .item {
+      padding: 2px 0;
+      border-bottom: 1px dotted #eee;
+    }
+  </style>
+  <link
+    rel="stylesheet"
+    href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+  />
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+</head>
+<body>
+  <div id="sidebar">
+    <h2>Company</h2>
+    <label>Company name
+      <input id="companyName" placeholder="e.g. Owen Bus Co">
+    </label>
+    <button onclick="setCompany()">Set company</button>
+    <div id="companyDisplay" style="margin-top:4px;font-size:12px;color:#555;"></div>
+
+    <h2>Routes</h2>
+    <label>Route number
+      <input id="routeNumber" placeholder="e.g. 10">
+    </label>
+    <label>Route name
+      <input id="routeName" placeholder="e.g. City Centre – Estate">
+    </label>
+    <label>Stops (lat,lon|lat,lon...)
+      <textarea id="routeStops" rows="3" placeholder="52.95,-1.15|52.96,-1.14"></textarea>
+    </label>
+    <button onclick="addRoute()">Add route</button>
+    <div class="list" id="routeList"></div>
+
+    <h2>Vehicles</h2>
+    <label>Fleet number
+      <input id="vehicleFleet" placeholder="e.g. 101">
+    </label>
+    <label>Registration
+      <input id="vehicleReg" placeholder="e.g. AB12 CDE">
+    </label>
+    <label>Start lat
+      <input id="vehicleLat" placeholder="52.95">
+    </label>
+    <label>Start lon
+      <input id="vehicleLon" placeholder="-1.15">
+    </label>
+    <label>Simulated?
+      <select id="vehicleSim">
+        <option value="true">Yes (simulate)</option>
+        <option value="false">No (real tracking)</option>
+      </select>
+    </label>
+    <button onclick="addVehicle()">Add vehicle</button>
+    <div class="list" id="vehicleList"></div>
+
+    <h2>Trips</h2>
+    <label>Route
+      <select id="tripRoute"></select>
+    </label>
+    <label>Vehicle
+      <select id="tripVehicle"></select>
+    </label>
+    <button onclick="startTrip()">Start trip (sim tracking)</button>
+    <div class="list" id="tripList"></div>
+
+    <h2>Real buses (placeholder)</h2>
+    <button onclick="loadRealBuses()">Load real buses (demo)</button>
+    <div class="list" id="realBusList"></div>
+  </div>
+
+  <div id="map"></div>
+
+  <script>
+    // --- Data stores (in-memory) ---
+    let company = null;
+    const routes = [];
+    const vehicles = [];
+    const trips = [];
+
+    // --- Map setup ---
+    const map = L.map('map').setView([52.95, -1.15], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {
+      maxZoom: 19
+    }).addTo(map);
+
+    const vehicleMarkers = {};
+    const realBusMarkers = {};
+
+    // --- Company ---
+    function setCompany() {
+      const name = document.getElementById('companyName').value.trim();
+      if (!name) {
+        alert('Enter a company name');
+        return;
+      }
+      company = { name };
+      document.getElementById('companyDisplay').textContent =
+        'Current company: ' + company.name;
+    }
+
+    // --- Routes ---
+    function addRoute() {
+      const number = document.getElementById('routeNumber').value.trim();
+      const name = document.getElementById('routeName').value.trim();
+      const stopsRaw = document.getElementById('routeStops').value.trim();
+
+      if (!number || !name || !stopsRaw) {
+        alert('Fill route number, name and stops');
+        return;
+      }
+
+      const stops = stopsRaw.split('|').map(s => {
+        const [lat, lon] = s.split(',').map(Number);
+        return { lat, lon };
+      });
+
+      const route = {
+        id: 'r' + (routes.length + 1),
+        number,
+        name,
+        stops
+      };
+      routes.push(route);
+      renderRoutes();
+      renderTripRouteOptions();
+    }
+
+    function renderRoutes() {
+      const list = document.getElementById('routeList');
+      list.innerHTML = '';
+      routes.forEach(r => {
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.textContent = r.number + ' ' + r.name + ' (' + r.stops.length + ' stops)';
+        list.appendChild(div);
+      });
+    }
+
+    function renderTripRouteOptions() {
+      const sel = document.getElementById('tripRoute');
+      sel.innerHTML = '';
+      routes.forEach(r => {
+        const opt = document.createElement('option');
+        opt.value = r.id;
+        opt.textContent = r.number + ' ' + r.name;
+        sel.appendChild(opt);
+      });
+    }
+
+    // --- Vehicles ---
+    function addVehicle() {
+      const fleet = document.getElementById('vehicleFleet').value.trim();
+      const reg = document.getElementById('vehicleReg').value.trim();
+      const lat = parseFloat(document.getElementById('vehicleLat').value);
+      const lon = parseFloat(document.getElementById('vehicleLon').value);
+      const simulated = document.getElementById('vehicleSim').value === 'true';
+
+      if (!fleet || !reg || isNaN(lat) || isNaN(lon)) {
+        alert('Fill fleet, reg, lat, lon');
+        return;
+      }
+
+      const vehicle = {
+        id: 'v' + (vehicles.length + 1),
+        fleet,
+        reg,
+        lat,
+        lon,
+        simulated
+      };
+      vehicles.push(vehicle);
+      renderVehicles();
+      renderTripVehicleOptions();
+      placeVehicleMarker(vehicle);
+    }
+
+    function renderVehicles() {
+      const list = document.getElementById('vehicleList');
+      list.innerHTML = '';
+      vehicles.forEach(v => {
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.textContent =
+          v.fleet + ' ' + v.reg +
+          ' [' + (v.simulated ? 'Simulated' : 'Real') + ']';
+        list.appendChild(div);
+      });
+    }
+
+    function renderTripVehicleOptions() {
+      const sel = document.getElementById('tripVehicle');
+      sel.innerHTML = '';
+      vehicles.forEach(v => {
+        const opt = document.createElement('option');
+        opt.value = v.id;
+        opt.textContent = v.fleet + ' ' + v.reg;
+        sel.appendChild(opt);
+      });
+    }
+
+    function placeVehicleMarker(v) {
+      const marker = L.marker([v.lat, v.lon]).addTo(map);
+      marker.bindPopup(v.fleet + ' ' + v.reg);
+      vehicleMarkers[v.id] = marker;
+    }
+
+    // --- Trips & simulated tracking ---
+    function startTrip() {
+      const routeId = document.getElementById('tripRoute').value;
+      const vehicleId = document.getElementById('tripVehicle').value;
+      if (!routeId || !vehicleId) {
+        alert('Select route and vehicle');
+        return;
+      }
+
+      const route = routes.find(r => r.id === routeId);
+      const vehicle = vehicles.find(v => v.id === vehicleId);
+      if (!route || !vehicle) {
+        alert('Invalid route or vehicle');
+        return;
+      }
+
+      const trip = {
+        id: 't' + (trips.length + 1),
+        routeId,
+        vehicleId,
+        startedAt: new Date()
+      };
+      trips.push(trip);
+      renderTrips();
+
+      if (vehicle.simulated) {
+        simulateVehicleOnRoute(vehicle, route);
+      } else {
+        alert('Vehicle marked as real; you can hook it to a real API instead.');
+      }
+    }
+
+    function renderTrips() {
+      const list = document.getElementById('tripList');
+      list.innerHTML = '';
+      trips.forEach(t => {
+        const route = routes.find(r => r.id === t.routeId);
+        const vehicle = vehicles.find(v => v.id === t.vehicleId);
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.textContent =
+          'Trip ' + t.id + ': ' +
+          (route ? route.number : '?') + ' / ' +
+          (vehicle ? vehicle.fleet : '?') +
+          ' @ ' + t.startedAt.toLocaleTimeString();
+        list.appendChild(div);
+      });
+    }
+
+    function simulateVehicleOnRoute(vehicle, route) {
+      let idx = 0;
+      const stops = route.stops;
+      if (!stops.length) return;
+
+      // Start at first stop
+      vehicle.lat = stops[0].lat;
+      vehicle.lon = stops[0].lon;
+      updateVehicleMarker(vehicle);
+
+      const interval = setInterval(() => {
+        idx++;
+        if (idx >= stops.length) {
+          clearInterval(interval);
+          return;
+        }
+        vehicle.lat = stops[idx].lat;
+        vehicle.lon = stops[idx].lon;
+        updateVehicleMarker(vehicle);
+      }, 3000);
+    }
+
+    function updateVehicleMarker(v) {
+      const marker = vehicleMarkers[v.id];
+      if (marker) {
+        marker.setLatLng([v.lat, v.lon]);
+      }
+    }
+
+    // --- Real buses (placeholder demo) ---
+    function loadRealBuses() {
+      // In a real app you’d call a backend or a public API.
+      // Here we just drop a couple of fake buses on the map.
+      const demo = [
+        { id: 'rb1', lat: 52.955, lon: -1.16, line: '24' },
+        { id: 'rb2', lat: 52.96, lon: -1.14, line: '36' }
+      ];
+
+      const list = document.getElementById('realBusList');
+      list.innerHTML = '';
+
+      demo.forEach(b => {
+        const div = document.createElement('div');
+        div.className = 'item';
+        div.textContent = 'Bus ' + b.id + ' line ' + b.line;
+        list.appendChild(div);
+
+        if (!realBusMarkers[b.id]) {
+          const marker = L.circleMarker([b.lat, b.lon], {
+            radius: 6,
+            color: 'blue'
+          }).addTo(map);
+          marker.bindPopup('Real bus ' + b.line);
+          realBusMarkers[b.id] = marker;
+        } else {
+          realBusMarkers[b.id].setLatLng([b.lat, b.lon]);
+        }
+      });
+    }
+  </script>
+</body>
+</html>
